@@ -8,6 +8,8 @@
 #
 
 
+import collections
+import importlib
 import re
 from typing import Dict, List, Optional, Tuple, Union
 import astropy.units
@@ -417,6 +419,10 @@ class Universe(Everything):
 
         for cls in Primordial.registry.values():
             setattr(self, cls._link_collection_name, LinkDict())
+            try:
+                importlib.import_module(f'.data.{self._link_name}.{cls._link_collection_name}', 'theverse')
+            except ImportError:
+                pass
 
 
 
@@ -434,7 +440,13 @@ def _class_name_to_name_and_collection_name(class_name):
 class MetaPrimordial(type):
     def __new__(cls, name, parents, attr_dict):
         if not hasattr(cls, 'registry'):
-            cls.registry: Dict[str, Primordial] = {}
+            # The order of types in the registry is significant because this
+            # sets import order and thus object creation order in each
+            # universe.  For example, planetary systems are created before
+            # stars, so that stars can reference them, and stars are created
+            # before planets, so planets can reference them.  To ensure order
+            # under Python <3.7, need OrderedDict.
+            cls.registry: Dict[str, Primordial] = collections.OrderedDict()
             return super().__new__(cls, name, parents, attr_dict)
         name, collection_name = _class_name_to_name_and_collection_name(name)
         if '_link_name' not in attr_dict:

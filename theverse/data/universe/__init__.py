@@ -13,10 +13,3 @@ from ...classes import Universe
 universe = Universe(
     name='Universe',
 )
-
-def load():
-    from . import planetary_systems
-    from . import stars
-    from . import planets
-load()
-del load
