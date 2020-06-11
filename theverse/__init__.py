@@ -9,3 +9,9 @@
 
 
 from .version import __version__, __version_info__
+
+
+from .data.universe import universe
+solar_system = universe.planetary_systems.solar_system
+sun = universe.stars.sun
+earth = universe.planets.earth

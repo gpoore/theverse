@@ -26,6 +26,56 @@ speed = length/time
 
 
 
+class RefString(str):
+    '''
+    String that also provides reference information.
+    '''
+    def __new__(cls,
+                string,
+                *,
+                name=None,
+                reference: Optional[str]=None,
+                reference_url: Optional[str]=None):
+        string = super().__new__(cls, string)
+        if name is not None and not isinstance(name, str):
+            raise TypeError
+        string._name = name
+        string._object = None
+        if reference is None and reference_url is None:
+            raise TypeError('At least one of "reference" and "reference_url" must be given')
+        if any(x is not None and not isinstance(x, str) for x in (reference, reference_url)):
+            raise TypeError
+        string._reference = reference
+        string._reference_url = reference_url
+        return string
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def reference(self):
+        return self._reference
+
+    @property
+    def reference_url(self):
+        return self._reference_url
+
+    def link_object(self, object):
+        if self._object is not None:
+            raise TheVerseError(f'"{self.name}" ({self.__class__.__name___}) is already linked to '
+                                f'"{self._object.name}" ({self._object.__class__.__name__})')
+        self._object = object
+
+    def unlink_object(self, object):
+        if self._object is object:
+            if not object.unlinking:
+                raise TheVerseError('Can only unlink an object by calling its ".unlink()" method')
+            self._object = None
+
+
+
+
 class Quantity(astropy.units.Quantity):
     '''
     Version of Astropy's `Quantity` for describing the physical and other
@@ -66,7 +116,7 @@ class Quantity(astropy.units.Quantity):
         inst._name = name
         inst._object = None
         if reference is None and reference_url is None:
-            raise TheVerseError('At least one of "reference" and "reference_url" must be given')
+            raise TypeError('At least one of "reference" and "reference_url" must be given')
         if any(x is not None and not isinstance(x, str) for x in (reference, reference_url)):
             raise TypeError
         inst._reference = reference
@@ -101,14 +151,11 @@ class Quantity(astropy.units.Quantity):
     def reference_url(self):
         return self._reference_url
 
-    def link_object(self, obj, attr_name, expected_unit):
+    def link_object(self, object):
         if self._object is not None:
             raise TheVerseError(f'"{self.name}" ({self.__class__.__name___}) is already linked to '
                                 f'"{self._object.name}" ({self._object.__class__.__name__})')
-        self._object = obj
-        self._name = attr_name
-        if self.unit != expected_unit:
-            raise TypeError(f'Invalid unit for "{obj.name}" attribute "{attr_name}"; expected "{expected_unit}", not "{self.unit}"')
+        self._object = object
 
     def unlink_object(self, object):
         if self._object is object:
@@ -155,7 +202,10 @@ class LinkDict(dict):
     def unlink_object(self, object: 'Everything'):
         if not object.unlinking:
             raise TheVerseError('Can only unlink an object by calling its ".unlink()" method')
-        super().__delitem__(object.name)
+        try:
+            super().__delitem__(object.name)
+        except KeyError:
+            pass
 
     def __getattr__(self, attr):
         try:
@@ -172,12 +222,27 @@ class Everything(object):
     Base class for representing material objects.  Attributes are typically
     `Quantity` instances or dicts mapping names to instances.
     '''
-    # Map attributes to expected units
+    # Map attribute names to expected `Everything` subclasses
+    _attr_links: Dict[str, 'Everything'] = {}
+    # List attribute names that are LinkDicts
+    _attr_linkdicts: List[str] = []
+    # Map attribute names to expected units
     _attr_units: Dict[str, Optional[astropy.units.Unit]] = {}
-    # Map attributes to fallback attributes when they do not exist
+    # List attribute names that are strings
+    _attr_strings: List[str] = []
+    # Map attribute names to fallback attribute names when they do not exist
     _attr_fallbacks: Dict[str, Union[str, List[str], Tuple[str]]] = {}
-    # Map attributes to names, which are used by quantities
-    _attr_names: Dict[str, str] = {}
+    # Map attribute names to optional alternate names used by quantities
+    _attr_quant_names: Dict[str, str] = {}
+
+    # Subclasses that are actually instantiated must also implement these:
+    #
+    #   _link_name: str             Default attribute name for when an
+    #                               instance is used as an attribute.
+    #
+    #   _link_collection_name: str  Default attribute name for when a
+    #                               collection of instances is used as an
+    #                               attribute.
 
     def __init__(self, name: str, **kwargs):
         if type(self) is Everything:
@@ -190,63 +255,85 @@ class Everything(object):
         reference = kwargs.pop('reference', None)
         reference_url = kwargs.pop('reference_url', None)
         if kwargs and reference is None and reference_url is None:
-            raise TheVerseError('At least one of "reference" and "reference_url" must be given')
+            raise TypeError('At least one of "reference" and "reference_url" must be given')
         if any(x is not None and not isinstance(x, str) for x in (reference, reference_url)):
             raise TypeError
         self._reference: Optional[str] = reference
         self._reference_url: Optional[str] = reference_url
 
-        # List of all dicts that link other Primordial instances to this
-        # instance.  This allows unlinking, which removes all references from
-        # other instances to this instance (so that this instance does not
-        # exist as far as they are concerned), but does not actually delete
-        # this instance.
+        # List of all objects that link to this instance.  This allows
+        # unlinking, which removes all references from other objects to this
+        # instance (so that this instance does not exist as far as they are
+        # concerned), but does not actually delete this instance.
         self._links = []
         # Whether unlinking is currently in progress
         self._unlinking = False
 
         for k, v in kwargs.items():
+            if k.startswith('_'):
+                raise ValueError
+            try:
+                expected_type = self._attr_links[k]
+            except KeyError:
+                pass
+            else:
+                if not issubclass(expected_type, Everything) or not isinstance(v, expected_type):
+                    raise TypeError
+                if hasattr(self, f'_proc_{k}'):
+                    processed_v = getattr(self, f'_proc_{k}')(v)
+                    setattr(self, k, processed_v)
+                else:
+                    setattr(self, k, v)
+                v.link_object(self)
+                continue
+            if k in self._attr_strings:
+                if isinstance(v, RefString):
+                    pass
+                elif isinstance(v, str):
+                    v = RefString(v, reference=self.reference, reference_url=self.reference_url)
+                else:
+                    raise TypeError
+                try:
+                    v._name = self._attr_quant_names[k]
+                except KeyError:
+                    v._name = k.replace('_', ' ')
+                v.link_object(self)
+                setattr(self, k, v)
+                continue
             try:
                 expected_unit = self._attr_units[k]
             except KeyError:
                 raise TypeError(f'Unknown keyword argument "{k}"')
-            if hasattr(self, f'_set_{k}'):
-                if expected_unit is None:
-                    getattr(self, f'_set_{k}')(v)
-                else:
-                    if isinstance(v, Quantity):
-                        quant = v
-                    else:
-                        quant = Quantity(v, reference=self.reference, reference_url=self.reference_url)
-                    if k in self._attr_names:
-                        quant.link_object(self, self._attr_names[k], expected_unit)
-                    else:
-                        quant.link_object(self, k.replace('_', ' '), expected_unit)
-                    getattr(self, f'_set_{k}')(quant)
-            elif expected_unit is None:
-                setattr(self, k, v)
+            if isinstance(v, Quantity):
+                quant = v
             else:
-                if isinstance(v, Quantity):
-                    quant = v
-                else:
-                    quant = Quantity(v, reference=self.reference, reference_url=self.reference_url)
-                if k in self._attr_names:
-                    quant.link_object(self, self._attr_names[k], expected_unit)
-                else:
-                    quant.link_object(self, k.replace('_', ' '), expected_unit)
-                setattr(self, k, quant)
+                quant = Quantity(v, reference=self.reference, reference_url=self.reference_url)
+            if quant.unit != expected_unit:
+                raise TypeError(f'Invalid unit for "{self.name}" attribute "{k}"; '
+                                f'expected "{expected_unit}", not "{quat.unit}"')
+            try:
+                quant._name = self._attr_quant_names[k]
+            except KeyError:
+                quant._name = k.replace('_', ' ')
+            quant.link_object(self)
+            setattr(self, k, quant)
+
+        for k in self._attr_linkdicts:
+            setattr(self, k, LinkDict())
 
     def __getattr__(self, attr):
+        if attr.startswith('_'):
+            raise AttributeError(f"{self.__class__} has no attribute {repr(attr)}")
         try:
             alias_or_aliases = self._attr_fallbacks[attr]
         except KeyError:
-            raise AttributeError(f"{self.__class__}' object has no attribute {attr}")
+            raise AttributeError(f"{self.__class__} has no attribute {repr(attr)}")
         if isinstance(alias_or_aliases, str):
             alias = alias_or_aliases
             try:
                 val = self.__dict__[alias]
             except KeyError:
-                raise AttributeError(f"'{self.__class__}' object has no attribute '{attr}'")
+                raise AttributeError(f"{self.__class__} has no attribute {repr(attr)}")
             return val
         aliases = alias_or_aliases
         for alias in aliases:
@@ -256,7 +343,17 @@ class Everything(object):
                 pass
             else:
                 return val
-        raise AttributeError(f"'{self.__class__}' object has no attribute '{attr}'")
+        raise AttributeError(f"{self.__class__} has no attribute {repr(attr)}")
+
+    def _linkdictproc(self, object: 'Everything'):
+        try:
+            linkdict = getattr(object, self._link_collection_name)
+        except AttributeError:
+            raise AttributeError(f'Cannot add "{self.name}" ({self.__class__.__name__}) to '
+                                f'"{object.name}" ({object.__class__.__name__}); '
+                                f'missing .{self._link_collection_name}')
+        linkdict.link_object(self)
+        self._links.append(linkdict)
 
     @property
     def name(self):
@@ -274,6 +371,21 @@ class Everything(object):
     def unlinking(self):
         return self._unlinking
 
+    def link_object(self, object: Union[LinkDict, 'Everything']):
+        self._links.append(object)
+
+    def unlink_object(self, object: 'Everything'):
+        if not object.unlinking:
+            raise TheVerseError('Can only unlink an object by calling its ".unlink()" method')
+        for k in self._attr_links:
+            try:
+                attr = getattr(self, k)
+            except AttributeError:
+                pass
+            else:
+                if attr is object:
+                    delattr(self, k)
+
     def unlink(self):
         '''
         Remove all references to this instance from other instances, so that
@@ -281,49 +393,68 @@ class Everything(object):
         remove all references from Quantity attributes.
         '''
         self._unlinking = True
-        for d in self._links:
-            d.unlink_object(self)
-        for v in self.__dict__.values():
-            try:
-                v.unlink_object(self)
-            except AttributeError:
-                pass
+        for x in self._links:
+            x.unlink_object(self)
         self._unlinking = False
         self._links = []
 
 
 
 class Universe(Everything):
+    _link_name = 'universe'
+    _link_collection_name = 'universes'
+
+    universes: Dict[str, 'Universe'] = LinkDict()
+    default_name = 'Universe'
+
     def __init__(self, name, **kwargs):
         super().__init__(name, **kwargs)
 
         if name in self.universes:
             raise TheVerseError(f'Universe "{name}" already exists')
         self.universes.link_object(self)
+        self._links.append(self.universes)
 
-        for name in Primordial.registry:
-            setattr(self, f'{name.lower()}s', LinkDict())
-
-    universes: Dict[str, 'Universe'] = LinkDict()
+        for cls in Primordial.registry.values():
+            setattr(self, cls._link_collection_name, LinkDict())
 
 
+
+
+def _class_name_to_name_and_collection_name(class_name):
+    name = re.sub('^[A-Z]', lambda m: m.group().lower(), class_name)
+    name = re.sub('[A-Z]', lambda m: '_' + m.group().lower(), name)
+    if not name.endswith('s'):
+        collection_name = name + 's'
+    else:
+        collection_name = name + 'es'
+    return (name, collection_name)
 
 
 class MetaPrimordial(type):
     def __new__(cls, name, parents, attr_dict):
         if not hasattr(cls, 'registry'):
             cls.registry: Dict[str, Primordial] = {}
-        else:
-            cls.registry[name] = cls
-        return super().__new__(cls, name, parents, attr_dict)
+            return super().__new__(cls, name, parents, attr_dict)
+        name, collection_name = _class_name_to_name_and_collection_name(name)
+        if '_link_name' not in attr_dict:
+            attr_dict['_link_name'] = name
+        if '_link_collection_name' not in attr_dict:
+            attr_dict['_link_collection_name'] = collection_name
+        new_class = super().__new__(cls, name, parents, attr_dict)
+        cls.registry[attr_dict['_link_name']] = new_class
+        return new_class
 
 
 class Primordial(Everything, metaclass=MetaPrimordial):
+    '''
+    Base class for everything within a universe.
+    '''
     def __init__(self, name, **kwargs):
         if type(self) is Primordial:
             raise TheVerseError(f'{self.__class__} cannot be instantiated; only subclasses can be used')
 
-        universe = kwargs.pop('universe', 'Universe')
+        universe = kwargs.pop('universe', Universe.default_name)
         if isinstance(universe, str):
             try:
                 universe = Universe.universes[universe]
@@ -332,86 +463,62 @@ class Primordial(Everything, metaclass=MetaPrimordial):
         elif not isinstance(universe, Universe):
             raise TypeError
         self.universe = universe
-        super().__init__(name, **kwargs)
-        registry = getattr(universe, f'{self.__class__.__name__.lower()}s')
+        registry = getattr(universe, self._link_collection_name)
         if name in registry:
-            raise TheVerseError(f'{self.__class__.__name__} "{name}" already exists in universe "{universe.name}"')
+            raise TheVerseError(f'"{name}" ({self.__class__.__name__}) already exists in universe "{universe.name}"')
+        for k, v in kwargs.items():
+            if k in self._attr_links and isinstance(v, str):
+                try:
+                    obj = getattr(universe, self._attr_links[k]._link_collection_name)[v]
+                except KeyError:
+                    raise TheVerseError(f'"{v}" ({v.__class__.__name__}) does not exist in universe "{universe.name}"')
+                kwargs[k] = obj
+        super().__init__(name, **kwargs)
         registry.link_object(self)
         self._links.append(registry)
 
 
 
 
+class PlanetarySystem(Primordial):
+    _attr_linkdicts = [
+        'stars',
+        'planets',
+    ]
+
+
 class Star(Primordial):
-    _attr_units = {
-        'universe': None,
-        'mass': mass,
-        'spectral_type': None,
+    _attr_links = {
+        'planetary_system': PlanetarySystem
     }
-
-    def __init__(self, name: str, **kwargs):
-        super().__init__(name, **kwargs)
-        self.planets: Dict[str, Planet] = LinkDict()
-
-    def unlink(self):
-        for planet in self.planets:
-            delattr(planet, 'primary')
-        super().unlink()
-
+    _attr_linkdicts = [
+        'planets',
+    ]
+    _attr_units = {
+        'mass': mass,
+    }
+    _attr_strings = [
+        'spectral_type',
+    ]
+    _proc_planetary_system = Primordial._linkdictproc
 
 
 
 class Planet(Primordial):
+    _attr_links = {
+        'planetary_system': PlanetarySystem,
+        'primary': Star,
+    }
     _attr_units = {
-        'universe': None,
         'mass': mass,
-        'primary': None,
         'radius': length,
         'volumetric_mean_radius': length,
         'equatorial_radius': length,
         'polar_radius': length,
     }
-
     _attr_fallbacks = {
         'radius': ('equatorial_radius', 'volumetric_mean_radius'),
         'star': 'primary',
     }
-
-    def _set_primary(self, primary):
-        if isinstance(primary, Star):
-            pass
-        elif isinstance(primary, str):
-            try:
-                primary = self.universe.stars[primary]
-            except KeyError:
-                raise TheVerseError(f'Star "{primary}" does not exist in universe "{self.universe.name}"')
-        else:
-            raise TypeError('Expected Star object or star name string')
-        primary.planets.link_object(self)
-        self._links.append(primary.planets)
-        self.primary = primary
-
-
-
-Universe(
-    name='Universe',
-)
-
-Star(
-    name='Sun',
-    reference='Williams, D.R. (23 February 2018). "Sun Fact Sheet". NASA Goddard Space Flight Center.',
-    reference_url='https://nssdc.gsfc.nasa.gov/planetary/factsheet/sunfact.html',
-    mass='1_988_500e24 kg',
-    spectral_type='G2 V',
-)
-
-Planet(
-    name='Earth',
-    reference='Williams, D.R. (02 April 2020). "Earth Fact Sheet". NASA Goddard Space Flight Center.',
-    reference_url='https://nssdc.gsfc.nasa.gov/planetary/factsheet/earthfact.html',
-    primary='Sun',
-    mass='5.9724e24 kg',
-    equatorial_radius='6378.137 km',
-    polar_radius='6356.752 km',
-    volumetric_mean_radius='6371.000 km',
-)
+    _proc_planetary_system = Primordial._linkdictproc
+    _proc_primary = Primordial._linkdictproc
