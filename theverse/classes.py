@@ -356,6 +356,7 @@ class Everything(object):
                                 f'missing .{self._link_collection_name}')
         linkdict.link_object(self)
         self._links.append(linkdict)
+        return object
 
     @property
     def name(self):
