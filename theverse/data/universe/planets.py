@@ -8,7 +8,7 @@
 #
 
 
-from ...classes import Planet
+from ...classes.astronomy import Planet
 
 
 Planet(

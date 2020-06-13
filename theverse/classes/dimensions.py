@@ -8,9 +8,15 @@
 #
 
 
-from ...classes.astronomy import PlanetarySystem
+'''
+Units for dimensional analysis checks.
+'''
 
 
-PlanetarySystem(
-    name='Solar System'
-)
+import astropy.units.si as si
+
+
+mass = si.kg
+length = si.m
+time = si.s
+speed = length/time

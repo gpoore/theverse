@@ -8,7 +8,7 @@
 #
 
 
-from ...classes import Star
+from ...classes.astronomy import Star
 
 
 Star(

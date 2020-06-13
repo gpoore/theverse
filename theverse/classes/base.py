@@ -8,161 +8,19 @@
 #
 
 
+'''
+Base classes for representing material objects.
+'''
+
+
 import collections
 import importlib
 import re
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 import astropy.units
-import astropy.units.si as si
-from .err import TheVerseError
-
-
-
-
-# Units for dimensional analysis checks
-mass = si.kg
-length = si.m
-time = si.s
-speed = length/time
-
-
-
-
-class RefStr(str):
-    '''
-    String that also provides reference information.
-    '''
-    def __new__(cls,
-                string: str,
-                *,
-                name=None,
-                reference: Optional[str]=None,
-                reference_url: Optional[str]=None):
-        inst = super().__new__(cls, string)
-        if name is not None and not isinstance(name, str):
-            raise TypeError
-        inst._name = name
-        inst._object = None
-        if reference is None and reference_url is None:
-            raise TypeError('At least one of "reference" and "reference_url" must be given')
-        if any(x is not None and not isinstance(x, str) for x in (reference, reference_url)):
-            raise TypeError
-        inst._reference = reference
-        inst._reference_url = reference_url
-        return inst
-
-    @property
-    def name(self):
-        return self._name
-
-    @property
-    def reference(self):
-        return self._reference
-
-    @property
-    def reference_url(self):
-        return self._reference_url
-
-    def link_object(self, object):
-        if self._object is not None:
-            raise TheVerseError(f'"{self.name}" ({self.__class__.__name__}) is already linked to '
-                                f'"{self._object.name}" ({self._object.__class__.__name__})')
-        self._object = object
-
-    def unlink_object(self, object):
-        if self._object is object:
-            if not object.unlinking:
-                raise TheVerseError('Can only unlink an object by calling its ".unlink()" method')
-            self._object = None
-
-
-
-
-class Quantity(astropy.units.Quantity):
-    '''
-    Version of Astropy's `Quantity` for describing the physical and other
-    properties of a material object while providing references for those
-    values.  Inspired by Astropy's `Constant`.  A material object is
-    represented as a Python object whose attributes are `Quantity` instances.
-
-    A quantity may optionally have a name.  It must have a reference or a
-    reference URL for its value.  A quantity will typically be used as an
-    attribute of a Python object that represents a material object.  In this
-    case, `.link_object()` is used to set the quantity's `.object` to the
-    object.
-
-    `Quantity()` can take a string `value` in which underscores are used as a
-    digit separator (for example, `1_234.567_890 kg`).
-
-    `Quantity` units are always SI units.
-
-    Astropy references:
-      * https://docs.astropy.org/en/stable/api/astropy.units.Quantity.html
-      * https://docs.astropy.org/en/stable/api/astropy.constants.Constant.html
-    '''
-    def __new__(cls,
-                value: Union[str, astropy.units.Quantity],
-                unit: Optional[Union[str, astropy.units.Unit]]=None,
-                *,
-                name=None,
-                reference: Optional[str]=None,
-                reference_url: Optional[str]=None,
-                **kwargs):
-        if isinstance(value, str):
-            value = cls._num_underscore_sep_strip(value)
-        inst = super().__new__(cls, value, unit, **kwargs)
-        inst = inst.si
-        if name is not None and not isinstance(name, str):
-            raise TypeError
-        inst._name = name
-        inst._object = None
-        if reference is None and reference_url is None:
-            raise TypeError('At least one of "reference" and "reference_url" must be given')
-        if any(x is not None and not isinstance(x, str) for x in (reference, reference_url)):
-            raise TypeError
-        inst._reference = reference
-        inst._reference_url = reference_url
-        return inst
-
-    @staticmethod
-    def _num_underscore_sep_strip(num_str, _regex=re.compile(r'(?<=[0-9])_(?=[0-9])')):
-        return _regex.sub(r'', num_str)
-
-    def __repr__(self):
-        return (f'<{self.__class__} '
-                f'name={repr(self.name)} '
-                f'value={self.value} unit={repr(self.unit)} '
-                f'reference={repr(self.reference)} '
-                f'reference_url={repr(self.reference_url)} '
-                f'object={repr(self.object)}>')
-
-    @property
-    def name(self):
-        return self._name
-
-    @property
-    def object(self):
-        return self._object
-
-    @property
-    def reference(self):
-        return self._reference
-
-    @property
-    def reference_url(self):
-        return self._reference_url
-
-    def link_object(self, object):
-        if self._object is not None:
-            raise TheVerseError(f'"{self.name}" ({self.__class__.__name__}) is already linked to '
-                                f'"{self._object.name}" ({self._object.__class__.__name__})')
-        self._object = object
-
-    def unlink_object(self, object):
-        if self._object is object:
-            if not object.unlinking:
-                raise TheVerseError('Can only unlink an object by calling its ".unlink()" method')
-            self._object = None
+from .refstr import RefStr
+from .quantity import Quantity
+from ..err import TheVerseError
 
 
 
@@ -270,7 +128,7 @@ class MetaEverything(type):
         except KeyError:
             pass
         else:
-            if not any(isinstance(_attr_linkdicts, t) for t in (list, tuple)):
+            if not any(isinstance(_attr_linkdicts, t) for t in (list, set, tuple)):
                 raise TypeError
             if not all(isinstance(x, str) and _attr_re.match(x)
                        for x in _attr_linkdicts):
@@ -292,7 +150,7 @@ class MetaEverything(type):
         except KeyError:
             pass
         else:
-            if not any(isinstance(_attr_strings, t) for t in (list, tuple)):
+            if not any(isinstance(_attr_strings, t) for t in (list, set, tuple)):
                 raise TypeError
             if not all(isinstance(x, str) and _attr_re.match(x)
                        for x in _attr_strings):
@@ -309,7 +167,7 @@ class MetaEverything(type):
                        for k in _attr_fallbacks):
                 raise TypeError
             if not all((isinstance(v, str) and not v.startswith('_')) or
-                       (any(isinstance(v, t) for t in (list, tuple)) and
+                       (any(isinstance(v, t) for t in (list, set, tuple)) and
                         all(isinstance(x, str) and _attr_re.match(x) for x in v))
                        for v in _attr_fallbacks.values()):
                 raise TypeError
@@ -328,8 +186,6 @@ class MetaEverything(type):
         return super().__new__(cls, name, parents, attr_dict)
 
 
-
-
 class Everything(object, metaclass=MetaEverything):
     '''
     Base class for representing material objects.  Attributes are typically
@@ -338,13 +194,13 @@ class Everything(object, metaclass=MetaEverything):
     # Map attribute names to expected `Everything` subclasses
     _attr_links: Dict[str, 'Everything'] = {}
     # List attribute names that are LinkDicts
-    _attr_linkdicts: List[str] = []
+    _attr_linkdicts: Union[List[str], Set[str], Tuple[str]] = []
     # Map attribute names to expected units
     _attr_units: Dict[str, astropy.units.Unit] = {}
     # List attribute names that are strings
-    _attr_strings: List[str] = []
+    _attr_strings: Union[List[str], Set[str], Tuple[str]] = []
     # Map attribute names to fallback attribute names when they do not exist
-    _attr_fallbacks: Dict[str, Union[str, List[str], Tuple[str]]] = {}
+    _attr_fallbacks: Dict[str, Union[str, List[str], Set[str], Tuple[str]]] = {}
     # Map attribute names to optional alternate names used by quantities
     _attr_quant_names: Dict[str, str] = {}
 
@@ -507,38 +363,45 @@ class Everything(object, metaclass=MetaEverything):
 
 
 class Universe(Everything):
-    universes: LinkDict = LinkDict(registry=True)
+    _universes: LinkDict = LinkDict(registry=True)
     default_name = 'Universe'
 
     def __init__(self, name, **kwargs):
         super().__init__(name, **kwargs)
-
         self.universes.link_object(self)
         self._links.append(self.universes)
 
-        for cls in Primordial.registry.values():
-            setattr(self, cls._link_collection_name, LinkDict(registry=True))
-            try:
-                importlib.import_module(f'.data.{self._link_name}.{cls._link_collection_name}', 'theverse')
-            except ImportError:
-                pass
+    def __getattr__(self, attr):
+        if attr in Primordial.link_collection_name_to_module_names_registry:
+            for link_collection_name in Primordial.link_collection_name_to_module_names_registry[attr]:
+                linkdict = LinkDict(registry=True)
+                setattr(self, f'_{link_collection_name}', linkdict)
+                try:
+                    importlib.import_module(f'.data.{self._link_name}.{link_collection_name}', 'theverse')
+                except ImportError:
+                    pass
+            return getattr(self, attr)
+        raise AttributeError(f'{self.__class__} has no attribute {repr(attr)}')
+
+    @property
+    def universes(self):
+        return self._universes
 
 
 
 
 class MetaPrimordial(MetaEverything):
+    module_to_link_collection_names_registry: Dict[str, List[str]] = collections.defaultdict(list)
     def __new__(cls, name, parents, attr_dict):
-        if not hasattr(cls, 'registry'):
-            # The order of types in the registry is significant because this
-            # sets import order and thus object creation order in each
-            # universe.  For example, planetary systems are created before
-            # stars, so that stars can reference them, and stars are created
-            # before planets, so planets can reference them.  To ensure order
-            # under Python <3.7, need OrderedDict.
-            cls.registry: Dict[str, Primordial] = collections.OrderedDict()
+        if not hasattr(cls, 'link_collection_name_to_module_names_registry'):
+            cls.link_collection_name_to_module_names_registry: Dict[str, List[str]] = {}
             return super().__new__(cls, name, parents, attr_dict)
         new_class = super().__new__(cls, name, parents, attr_dict)
-        cls.registry[attr_dict['_link_name']] = new_class
+        link_collection_name = attr_dict['_link_collection_name']
+        module_link_collection_names = cls.module_to_link_collection_names_registry[attr_dict['__module__']]
+        module_link_collection_names.append(link_collection_name)
+        cls.link_collection_name_to_module_names_registry[f'_{link_collection_name}'] = module_link_collection_names
+        setattr(Universe, link_collection_name, property(lambda self: getattr(self, f'_{link_collection_name}')))
         return new_class
 
 
@@ -553,7 +416,7 @@ class Primordial(Everything, metaclass=MetaPrimordial):
         universe = kwargs.pop('universe', Universe.default_name)
         if isinstance(universe, str):
             try:
-                universe = Universe.universes[universe]
+                universe = Universe._universes[universe]
             except KeyError:
                 raise TheVerseError(f'Universe "{universe}" does not exist')
         elif not isinstance(universe, Universe):
@@ -572,49 +435,3 @@ class Primordial(Everything, metaclass=MetaPrimordial):
         super().__init__(name, **kwargs)
         registry.link_object(self)
         self._links.append(registry)
-
-
-
-
-class PlanetarySystem(Primordial):
-    _attr_linkdicts = [
-        'stars',
-        'planets',
-    ]
-
-
-
-
-class Star(Primordial):
-    _attr_links = {
-        'planetary_system': PlanetarySystem
-    }
-    _attr_linkdicts = [
-        'planets',
-    ]
-    _attr_units = {
-        'mass': mass,
-    }
-    _attr_strings = [
-        'spectral_type',
-    ]
-
-
-
-
-class Planet(Primordial):
-    _attr_links = {
-        'planetary_system': PlanetarySystem,
-        'primary': Star,
-    }
-    _attr_units = {
-        'mass': mass,
-        'radius': length,
-        'volumetric_mean_radius': length,
-        'equatorial_radius': length,
-        'polar_radius': length,
-    }
-    _attr_fallbacks = {
-        'radius': ('equatorial_radius', 'volumetric_mean_radius'),
-        'star': 'primary',
-    }
