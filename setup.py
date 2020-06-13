@@ -12,7 +12,7 @@ import sys
 if sys.version_info < (3, 6):
     sys.exit('theverse requires Python 3.6+')
 import pathlib
-from setuptools import setup
+from setuptools import find_packages, setup
 
 
 
@@ -30,9 +30,7 @@ long_description = readme_path.read_text(encoding='utf8')
 setup(name='theverse',
       version=version,
       py_modules=[],
-      packages=[
-          'theverse'
-      ],
+      packages=find_packages(),
       package_data = {},
       description='Find properties of objects in our universe (and others) without leaving Python',
       long_description=long_description,
